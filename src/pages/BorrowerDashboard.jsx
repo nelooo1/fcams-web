@@ -1,188 +1,828 @@
-// src/pages/BorrowerDashboard.jsx
-import { useState, useEffect } from 'react';
+
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { LogOut, Package, Calendar, Clock, AlertCircle } from 'lucide-react';
-import { authService } from '../services/authService';
-import { assetService } from '../services/assetService';
-import { transactionService } from '../services/transactionService';
+import {
+  Package,
+  AlertCircle,
+  CheckCircle,
+  Clock,
+  LogOut,
+  RefreshCw,
+  Wrench,
+  ClipboardList,
+  Check,
+  RotateCcw,
+  X,
+} from 'lucide-react';
+
 import { supabase } from '../config/supabase';
 
-export default function BorrowerDashboard() {
+export default function StaffDashboard() {
   const navigate = useNavigate();
-  const [assets, setAssets] = useState([]);
-  const [requests, setRequests] = useState([]);
+
   const [user, setUser] = useState(null);
-  
+  const [profile, setProfile] = useState(null);
+  const [assets, setAssets] = useState([]);
+  const [reports, setReports] = useState([]);
+  const [returnRequests, setReturnRequests] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
   const [selectedAsset, setSelectedAsset] = useState('');
-  const [purpose, setPurpose] = useState('');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
-  const [message, setMessage] = useState({ type: '', text: '' });
+  const [issueDescription, setIssueDescription] = useState('');
+  const [returnAssignment, setReturnAssignment] = useState(null);
+  const [returnReason, setReturnReason] = useState('');
+  const [returnSubmitting, setReturnSubmitting] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [processingId, setProcessingId] = useState(null);
 
   useEffect(() => {
-    loadData();
+    initializeDashboard();
   }, []);
 
-  const loadData = async () => {
-    try {
-      const session = await authService.getCurrentSession();
-      if (!session) {
-        navigate('/login');
-        return;
-      }
-      setUser(session.user);
+  async function initializeDashboard() {
+    const {
+      data: { session },
+      error: sessionError,
+    } = await supabase.auth.getSession();
 
-      // Fetch assets that are currently available to borrow
-      const availableAssets = await assetService.getBorrowableAssets();
-      setAssets(availableAssets);
-
-      // Fetch the logged-in user's previous and active requests
-      const { data: myRequests } = await supabase
-        .from('borrowing_requests')
-        .select('*, assets(name, asset_tag)')
-        .eq('borrower_id', session.user.id)
-        .order('created_at', { ascending: false });
-        
-      if (myRequests) setRequests(myRequests);
-    } catch (error) {
-      console.error("Error loading data:", error);
+    if (sessionError || !session) {
+      navigate('/sign-in');
+      return;
     }
-  };
 
-  const handleLogout = async () => {
-    await authService.signOut();
-    navigate('/login');
-  };
+    setUser(session.user);
 
-  const handleSubmit = async (e) => {
+    const { data: userProfile, error: profileError } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', session.user.id)
+      .single();
+
+    if (profileError || !userProfile) {
+      setError('Unable to load your profile.');
+      setLoading(false);
+      return;
+    }
+
+    if (String(userProfile.role).toLowerCase() !== 'staff') {
+      navigate('/sign-in');
+      return;
+    }
+
+    setProfile(userProfile);
+    await loadStaffData(session.user.id);
+  }
+
+  async function loadStaffData(userId = user?.id) {
+    if (!userId) return;
+
+    setLoading(true);
+    setError('');
+
+    try {
+      const { data: assignments, error: assignmentError } = await supabase
+        .from('assignments')
+        .select(`
+          id,
+          asset_id,
+          assigned_at,
+          notes,
+          is_active,
+          assets (
+            id,
+            asset_tag,
+            name,
+            status,
+            condition
+          )
+        `)
+        .eq('staff_id', userId)
+        .eq('is_active', true)
+        .order('assigned_at', { ascending: false });
+
+      if (assignmentError) throw assignmentError;
+
+      setAssets(assignments || []);
+
+      const { data: maintenanceReports, error: reportsError } =
+        await supabase
+          .from('maintenance_records')
+          .select(`
+            id,
+            asset_id,
+            issue_description,
+            status,
+            reported_at,
+            action_taken,
+            pickup_status,
+            pickup_requested_at,
+            pickup_approved_at,
+            picked_up_at,
+            repair_started_at,
+            repair_completed_at,
+            returned_at,
+            technician_id,
+            technician:profiles!maintenance_records_technician_id_fkey (
+              full_name
+            ),
+            assets (
+              id,
+              asset_tag,
+              name
+            )
+          `)
+          .order('reported_at', { ascending: false });
+
+      if (reportsError) throw reportsError;
+
+      setReports(maintenanceReports || []);
+
+      const { data: requests, error: returnError } = await supabase
+        .from('asset_return_requests')
+        .select(`
+          id,
+          assignment_id,
+          asset_id,
+          reason,
+          status,
+          requested_at,
+          received_at
+        `)
+        .eq('staff_id', userId)
+        .order('requested_at', { ascending: false });
+
+      if (returnError) throw returnError;
+
+      setReturnRequests(requests || []);
+    } catch (err) {
+      console.error('Staff dashboard loading error:', err);
+      setError(err.message || 'Unable to load dashboard information.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function reportIssue(e) {
     e.preventDefault();
-    setMessage({ type: '', text: '' });
-    try {
-      await transactionService.submitRequest(user.id, selectedAsset, startDate, endDate, purpose);
-      setMessage({ type: 'success', text: 'Request submitted successfully!' });
-      
-      // Reset form fields after successful submission
-      setSelectedAsset('');
-      setPurpose('');
-      setStartDate('');
-      setEndDate('');
-      loadData(); // Refresh the tables
-    } catch (error) {
-      setMessage({ type: 'error', text: error.message });
+
+    if (!selectedAsset || !issueDescription.trim()) {
+      setError('Select an asset and describe the problem.');
+      return;
     }
-  };
+
+    setSubmitting(true);
+    setError('');
+    setMessage('');
+
+    try {
+      const { error: insertError } = await supabase
+        .from('maintenance_records')
+        .insert({
+          asset_id: selectedAsset,
+          issue_description: issueDescription.trim(),
+          reported_by: user.id,
+          status: 'Open',
+        });
+
+      if (insertError) throw insertError;
+
+      setMessage('Maintenance issue reported successfully.');
+      setSelectedAsset('');
+      setIssueDescription('');
+
+      await loadStaffData(user.id);
+    } catch (err) {
+      setError(err.message || 'Unable to submit maintenance report.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitReturnRequest(e) {
+    e.preventDefault();
+
+    if (!returnAssignment || !returnReason.trim()) {
+      setError('Please provide a reason for returning the asset.');
+      return;
+    }
+
+    setReturnSubmitting(true);
+    setError('');
+    setMessage('');
+
+    try {
+      const { error: insertError } = await supabase
+        .from('asset_return_requests')
+        .insert({
+          assignment_id: returnAssignment.id,
+          asset_id: returnAssignment.asset_id,
+          staff_id: user.id,
+          reason: returnReason.trim(),
+        });
+
+      if (insertError) throw insertError;
+
+      setMessage(
+        'Asset return request submitted successfully. Please wait for the Administrator to confirm receipt.'
+      );
+
+      setReturnAssignment(null);
+      setReturnReason('');
+
+      await loadStaffData(user.id);
+    } catch (err) {
+      setError(err.message || 'Unable to submit asset return request.');
+    } finally {
+      setReturnSubmitting(false);
+    }
+  }
+
+  async function approvePickup(recordId) {
+    const confirmed = window.confirm(
+      'Approve the Technician to collect this asset for maintenance?'
+    );
+
+    if (!confirmed) return;
+
+    setProcessingId(recordId);
+    setError('');
+    setMessage('');
+
+    try {
+      const { error: approvalError } = await supabase.rpc(
+        'approve_fcams_pickup',
+        {
+          p_record_id: recordId,
+        }
+      );
+
+      if (approvalError) throw approvalError;
+
+      setMessage('Pickup request approved successfully.');
+      await loadStaffData(user.id);
+    } catch (err) {
+      setError(err.message || 'Unable to approve pickup request.');
+    } finally {
+      setProcessingId(null);
+    }
+  }
+
+  async function logout() {
+    await supabase.auth.signOut();
+    navigate('/sign-in');
+  }
+
+  function formatDate(date) {
+    if (!date) return 'Not yet recorded';
+
+    return new Date(date).toLocaleString();
+  }
+
+  function statusClass(status) {
+    const value = String(status || '').toLowerCase();
+
+    if (
+      value === 'closed' ||
+      value === 'returned' ||
+      value === 'approved' ||
+      value === 'received'
+    ) {
+      return 'bg-green-100 text-green-700';
+    }
+
+    if (value === 'in progress' || value === 'picked up') {
+      return 'bg-purple-100 text-purple-700';
+    }
+
+    if (
+      value === 'awaiting approval' ||
+      value === 'open' ||
+      value === 'pending'
+    ) {
+      return 'bg-yellow-100 text-yellow-700';
+    }
+
+    return 'bg-gray-100 text-gray-700';
+  }
+
+  const assignedAssetIds = new Set(
+    assets.map((assignment) => assignment.asset_id)
+  );
+
+  const pendingPickupReports = reports.filter(
+    (report) =>
+      report.pickup_status === 'Awaiting Approval' &&
+      assignedAssetIds.has(report.asset_id)
+  );
+
+  const pendingReturnCount = returnRequests.filter(
+    (request) => request.status === 'Pending'
+  ).length;
+
+  function getReturnRequest(assignmentId) {
+    return returnRequests.find(
+      (request) => request.assignment_id === assignmentId
+    );
+  }
+
+  if (loading && !profile) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <RefreshCw className="animate-spin text-purple-700" size={28} />
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Navigation Header */}
-      <nav className="bg-blue-600 text-white shadow-md px-6 py-4 flex justify-between items-center">
-        <div className="flex items-center space-x-2">
-          <Package className="h-6 w-6" />
-          <h1 className="text-xl font-bold tracking-wide">Faculty Asset Management</h1>
+    <div className="min-h-screen bg-gray-50 text-gray-900">
+      <header className="bg-white border-b border-gray-200">
+        <div className="max-w-7xl mx-auto px-6 py-5 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-purple-800">
+              Staff Dashboard
+            </h1>
+            <p className="text-sm text-gray-500 mt-1">
+              Welcome, {profile?.full_name || 'Staff Member'}
+            </p>
+          </div>
+
+          <button
+            onClick={logout}
+            className="flex items-center gap-2 text-gray-600 hover:text-purple-700"
+          >
+            <LogOut size={18} />
+            <span>Logout</span>
+          </button>
         </div>
-        <button onClick={handleLogout} className="flex items-center space-x-2 text-sm font-medium hover:text-blue-200 transition-colors">
-          <LogOut className="h-5 w-5" />
-          <span>Sign Out</span>
-        </button>
-      </nav>
+      </header>
 
-      <div className="max-w-7xl mx-auto px-4 py-8 grid grid-cols-1 md:grid-cols-3 gap-8">
-        
-        {/* Left Column: Request Form */}
-        <div className="md:col-span-1 bg-white rounded-xl shadow-sm p-6 border border-gray-100 h-fit">
-          <h2 className="text-lg font-bold text-gray-800 mb-4 flex items-center">
-            <Calendar className="h-5 w-5 mr-2 text-blue-600" />
-            New Borrowing Request
-          </h2>
-          
-          {message.text && (
-            <div className={`mb-4 p-3 rounded-md text-sm flex items-center ${message.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
-              <AlertCircle className="h-4 w-4 mr-2 flex-shrink-0" />
-              {message.text}
-            </div>
-          )}
+      <main className="max-w-7xl mx-auto px-6 py-8 space-y-8">
+        {error && (
+          <div className="p-4 rounded-lg bg-red-50 text-red-700 flex gap-2">
+            <AlertCircle size={20} />
+            {error}
+          </div>
+        )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+        {message && (
+          <div className="p-4 rounded-lg bg-green-50 text-green-700 flex gap-2">
+            <CheckCircle size={20} />
+            {message}
+          </div>
+        )}
+
+        <section className="grid grid-cols-1 md:grid-cols-4 gap-5">
+          <div className="bg-white border rounded-xl p-5">
+            <div className="flex justify-between items-center">
+              <p className="text-gray-500 text-sm">Assigned Assets</p>
+              <Package className="text-purple-700" />
+            </div>
+            <p className="text-3xl font-bold mt-3">{assets.length}</p>
+          </div>
+
+          <div className="bg-white border rounded-xl p-5">
+            <div className="flex justify-between items-center">
+              <p className="text-gray-500 text-sm">My Maintenance Reports</p>
+              <Wrench className="text-purple-700" />
+            </div>
+            <p className="text-3xl font-bold mt-3">
+              {reports.filter((report) => report.status !== 'Closed').length}
+            </p>
+          </div>
+
+          <div className="bg-white border rounded-xl p-5">
+            <div className="flex justify-between items-center">
+              <p className="text-gray-500 text-sm">Pickup Approvals Needed</p>
+              <Clock className="text-purple-700" />
+            </div>
+            <p className="text-3xl font-bold mt-3">
+              {pendingPickupReports.length}
+            </p>
+          </div>
+
+          <div className="bg-white border rounded-xl p-5">
+            <div className="flex justify-between items-center">
+              <p className="text-gray-500 text-sm">Pending Return Requests</p>
+              <RotateCcw className="text-purple-700" />
+            </div>
+            <p className="text-3xl font-bold mt-3">{pendingReturnCount}</p>
+          </div>
+        </section>
+
+        <section className="bg-white border rounded-xl p-6">
+          <div className="flex items-center justify-between mb-5">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Select Equipment</label>
-              <select required value={selectedAsset} onChange={(e) => setSelectedAsset(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm bg-white">
-                <option value="">-- Choose an asset --</option>
-                {assets.map(asset => (
-                  <option key={asset.id} value={asset.id}>
-                    {asset.name} ({asset.asset_tag})
-                  </option>
-                ))}
-              </select>
+              <h2 className="text-lg font-bold">My Assigned Assets</h2>
+              <p className="text-sm text-gray-500">
+                Assets currently assigned to you
+              </p>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">From</label>
-                <input type="date" required value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">To</label>
-                <input type="date" required value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm" />
-              </div>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Purpose</label>
-              <textarea required rows="3" value={purpose} onChange={(e) => setPurpose(e.target.value)} placeholder="State your reason for borrowing..." className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm"></textarea>
-            </div>
-            <button type="submit" className="w-full bg-blue-600 text-white font-medium py-2.5 rounded-lg hover:bg-blue-700 transition-colors">
-              Submit Request
+
+            <button
+              onClick={() => loadStaffData()}
+              className="p-2 rounded-lg hover:bg-purple-50 text-purple-700"
+              title="Refresh"
+            >
+              <RefreshCw size={19} />
             </button>
-          </form>
-        </div>
+          </div>
 
-        {/* Right Column: Request History */}
-        <div className="md:col-span-2 bg-white rounded-xl shadow-sm p-6 border border-gray-100">
-          <h2 className="text-lg font-bold text-gray-800 mb-4 flex items-center">
-            <Clock className="h-5 w-5 mr-2 text-blue-600" />
-            My Requests
-          </h2>
-          
-          {requests.length === 0 ? (
-            <div className="text-center py-12 text-gray-500">
-              <Package className="h-12 w-12 mx-auto text-gray-300 mb-3" />
-              <p>You haven't made any borrowing requests yet.</p>
-            </div>
+          {assets.length === 0 ? (
+            <p className="text-gray-500 py-6 text-center">
+              You currently have no assigned assets.
+            </p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-gray-50 text-gray-600 border-b border-gray-100">
-                  <tr>
-                    <th className="px-4 py-3 font-semibold rounded-tl-lg">Equipment</th>
-                    <th className="px-4 py-3 font-semibold">Dates</th>
-                    <th className="px-4 py-3 font-semibold">Purpose</th>
-                    <th className="px-4 py-3 font-semibold rounded-tr-lg">Status</th>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left border-b text-gray-500">
+                    <th className="py-3 pr-4">Asset Tag</th>
+                    <th className="py-3 pr-4">Asset Name</th>
+                    <th className="py-3 pr-4">Condition</th>
+                    <th className="py-3 pr-4">Status</th>
+                    <th className="py-3 pr-4">Assigned Date</th>
+                    <th className="py-3">Action</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {requests.map(req => (
-                    <tr key={req.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-4 py-3 font-medium text-gray-900">{req.assets?.name}</td>
-                      <td className="px-4 py-3 text-gray-600">
-                        {new Date(req.requested_from).toLocaleDateString()} - {new Date(req.requested_to).toLocaleDateString()}
-                      </td>
-                      <td className="px-4 py-3 text-gray-600 truncate max-w-[200px]">{req.purpose}</td>
-                      <td className="px-4 py-3">
-                        <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${
-                          req.status === 'Approved' ? 'bg-green-100 text-green-700' :
-                          req.status === 'Rejected' ? 'bg-red-100 text-red-700' :
-                          'bg-yellow-100 text-yellow-700'
-                        }`}>
-                          {req.status}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
+
+                <tbody>
+                  {assets.map((assignment) => {
+                    const request = getReturnRequest(assignment.id);
+
+                    const canRequestReturn =
+                      assignment.assets?.status === 'Assigned' &&
+                      (!request || request.status !== 'Pending');
+
+                    return (
+                      <tr
+                        key={assignment.id}
+                        className="border-b last:border-0"
+                      >
+                        <td className="py-4 pr-4 font-medium">
+                          {assignment.assets?.asset_tag || 'N/A'}
+                        </td>
+
+                        <td className="py-4 pr-4">
+                          {assignment.assets?.name || 'Unknown asset'}
+                        </td>
+
+                        <td className="py-4 pr-4">
+                          {assignment.assets?.condition || 'N/A'}
+                        </td>
+
+                        <td className="py-4 pr-4">
+                          {assignment.assets?.status || 'N/A'}
+                        </td>
+
+                        <td className="py-4 pr-4">
+                          {formatDate(assignment.assigned_at)}
+                        </td>
+
+                        <td className="py-4">
+                          {request?.status === 'Pending' ? (
+                            <span className="inline-block px-3 py-2 rounded-lg bg-yellow-100 text-yellow-700 text-xs">
+                              Return Pending
+                            </span>
+                          ) : canRequestReturn ? (
+                            <button
+                              onClick={() => {
+                                setReturnAssignment(assignment);
+                                setReturnReason('');
+                                setError('');
+                                setMessage('');
+                              }}
+                              className="flex items-center gap-2 bg-purple-700 hover:bg-purple-800 text-white px-3 py-2 rounded-lg text-xs"
+                            >
+                              <RotateCcw size={15} />
+                              Request Return
+                            </button>
+                          ) : (
+                            <span className="text-xs text-gray-500">
+                              Not available
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           )}
-        </div>
-        
-      </div>
+        </section>
+
+        {returnAssignment && (
+          <section className="bg-white border border-purple-200 rounded-xl p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-lg font-bold">Request Asset Return</h2>
+                <p className="text-sm text-gray-500">
+                  {returnAssignment.assets?.asset_tag} -{' '}
+                  {returnAssignment.assets?.name}
+                </p>
+              </div>
+
+              <button
+                onClick={() => setReturnAssignment(null)}
+                className="p-2 rounded-lg hover:bg-gray-100 text-gray-500"
+                title="Close"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={submitReturnRequest} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-2">
+                  Reason for returning this asset
+                </label>
+
+                <textarea
+                  value={returnReason}
+                  onChange={(e) => setReturnReason(e.target.value)}
+                  rows={4}
+                  placeholder="Explain why you are returning this asset..."
+                  className="w-full border rounded-lg p-3 outline-none focus:border-purple-600"
+                  required
+                />
+              </div>
+
+              <div className="flex flex-wrap gap-3">
+                <button
+                  type="submit"
+                  disabled={returnSubmitting}
+                  className="bg-purple-700 hover:bg-purple-800 disabled:opacity-50 text-white px-5 py-3 rounded-lg"
+                >
+                  {returnSubmitting
+                    ? 'Submitting...'
+                    : 'Submit Return Request'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setReturnAssignment(null)}
+                  className="border border-gray-300 hover:bg-gray-50 px-5 py-3 rounded-lg"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </section>
+        )}
+
+        <section className="bg-white border rounded-xl p-6">
+          <h2 className="text-lg font-bold mb-5">
+            My Asset Return Requests
+          </h2>
+
+          {returnRequests.length === 0 ? (
+            <p className="text-gray-500 py-5 text-center">
+              You have not submitted any asset return requests.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {returnRequests.map((request) => {
+                const assignment = assets.find(
+                  (item) => item.id === request.assignment_id
+                );
+
+                return (
+                  <div
+                    key={request.id}
+                    className="border rounded-lg p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3"
+                  >
+                    <div>
+                      <p className="font-semibold">
+                        {assignment?.assets?.name || 'Asset return request'}
+                      </p>
+                      <p className="text-sm text-gray-500">
+                        Reason: {request.reason}
+                      </p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Requested: {formatDate(request.requested_at)}
+                      </p>
+                      {request.received_at && (
+                        <p className="text-xs text-gray-500 mt-1">
+                          Received: {formatDate(request.received_at)}
+                        </p>
+                      )}
+                    </div>
+
+                    <span
+                      className={`px-3 py-2 rounded-full text-xs w-fit ${statusClass(request.status)}`}
+                    >
+                      {request.status}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        <section className="bg-white border rounded-xl p-6">
+          <div className="flex items-center gap-2 mb-5">
+            <ClipboardList className="text-purple-700" />
+            <div>
+              <h2 className="text-lg font-bold">Report an Asset Problem</h2>
+              <p className="text-sm text-gray-500">
+                Report a fault with an asset assigned to you
+              </p>
+            </div>
+          </div>
+
+          <form onSubmit={reportIssue} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Select Asset
+              </label>
+
+              <select
+                value={selectedAsset}
+                onChange={(e) => setSelectedAsset(e.target.value)}
+                className="w-full border rounded-lg p-3 outline-none focus:border-purple-600"
+                required
+              >
+                <option value="">Choose an assigned asset</option>
+                {assets.map((assignment) => (
+                  <option
+                    key={assignment.asset_id}
+                    value={assignment.asset_id}
+                  >
+                    {assignment.assets?.asset_tag} -{' '}
+                    {assignment.assets?.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Describe the Problem
+              </label>
+
+              <textarea
+                value={issueDescription}
+                onChange={(e) => setIssueDescription(e.target.value)}
+                rows={4}
+                placeholder="Describe the fault or maintenance issue..."
+                className="w-full border rounded-lg p-3 outline-none focus:border-purple-600"
+                required
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={submitting}
+              className="bg-purple-700 hover:bg-purple-800 disabled:opacity-50 text-white px-5 py-3 rounded-lg"
+            >
+              {submitting ? 'Submitting...' : 'Submit Maintenance Report'}
+            </button>
+          </form>
+        </section>
+
+        <section className="bg-white border rounded-xl p-6">
+          <div className="mb-5">
+            <h2 className="text-lg font-bold">
+              Technician Pickup Requests
+            </h2>
+            <p className="text-sm text-gray-500">
+              Approve collection requests for assets currently assigned to you
+            </p>
+          </div>
+
+          {pendingPickupReports.length === 0 ? (
+            <p className="text-gray-500 py-5 text-center">
+              There are no pickup requests awaiting your approval.
+            </p>
+          ) : (
+            <div className="space-y-4">
+              {pendingPickupReports.map((report) => (
+                <div
+                  key={report.id}
+                  className="border border-purple-200 rounded-lg p-5"
+                >
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div>
+                      <h3 className="font-semibold">
+                        {report.assets?.name || 'Unknown asset'}
+                      </h3>
+
+                      <p className="text-sm text-gray-500">
+                        Asset Tag: {report.assets?.asset_tag || 'N/A'}
+                      </p>
+
+                      <p className="text-sm mt-2">
+                        <strong>Reported problem:</strong>{' '}
+                        {report.issue_description}
+                      </p>
+
+                      <p className="text-xs text-gray-500 mt-2">
+                        Pickup requested:{' '}
+                        {formatDate(report.pickup_requested_at)}
+                      </p>
+
+                      <span
+                        className={`inline-block mt-3 px-3 py-1 rounded-full text-xs ${statusClass(report.pickup_status)}`}
+                      >
+                        {report.pickup_status}
+                      </span>
+                    </div>
+
+                    <button
+                      onClick={() => approvePickup(report.id)}
+                      disabled={processingId === report.id}
+                      className="flex items-center justify-center gap-2 bg-purple-700 hover:bg-purple-800 disabled:opacity-50 text-white px-4 py-3 rounded-lg"
+                    >
+                      <Check size={18} />
+                      {processingId === report.id
+                        ? 'Approving...'
+                        : 'Approve Pickup'}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* MAINTENANCE REPORTS */}
+        <section className="bg-white border rounded-xl p-6">
+          <h2 className="text-lg font-bold mb-5">Maintenance Reports</h2>
+
+          {reports.length === 0 ? (
+            <p className="text-gray-500 py-5 text-center">
+              You have not submitted any maintenance reports.
+            </p>
+          ) : (
+            <div className="space-y-4">
+              {reports.map((report) => (
+                <div key={report.id} className="border rounded-lg p-5">
+                  <div className="flex flex-col md:flex-row md:justify-between gap-3">
+                    <div>
+                      <h3 className="font-semibold">
+                        {report.assets?.name || 'Unknown asset'}
+                      </h3>
+
+                      <p className="text-sm text-gray-500">
+                        Asset Tag: {report.assets?.asset_tag || 'N/A'}
+                      </p>
+
+                      <p className="text-sm mt-2">
+                        {report.issue_description}
+                      </p>
+
+                      <p className="text-xs text-gray-500 mt-2">
+                        Reported: {formatDate(report.reported_at)}
+                      </p>
+
+                      {/* TECHNICIAN NAME */}
+                      <p className="text-sm text-purple-700 mt-2">
+                        <strong>Technician:</strong>{' '}
+                        {report.technician?.full_name || 'Not assigned yet'}
+                      </p>
+                    </div>
+
+                    <div className="flex flex-col gap-2 items-start md:items-end">
+                      <span
+                        className={`px-3 py-1 rounded-full text-xs ${statusClass(report.status)}`}
+                      >
+                        Maintenance: {report.status}
+                      </span>
+
+                      <span
+                        className={`px-3 py-1 rounded-full text-xs ${statusClass(report.pickup_status)}`}
+                      >
+                        Pickup: {report.pickup_status || 'Not Requested'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {report.action_taken && (
+                    <div className="mt-4 p-3 bg-gray-50 rounded-lg">
+                      <p className="text-sm font-medium">
+                        Technician's Action
+                      </p>
+                      <p className="text-sm text-gray-600 mt-1">
+                        {report.action_taken}
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-4 text-xs text-gray-500">
+                    <p>Picked up: {formatDate(report.picked_up_at)}</p>
+                    <p>Repair started: {formatDate(report.repair_started_at)}</p>
+                    <p>Repair completed: {formatDate(report.repair_completed_at)}</p>
+                    <p>Returned: {formatDate(report.returned_at)}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </main>
     </div>
   );
 }
+

@@ -1,24 +1,55 @@
 
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import {
+  BrowserRouter as Router,
+  Routes,
+  Route,
+  Navigate,
+} from 'react-router-dom';
+
 import Login from './pages/Login';
 import Register from './pages/Register';
 import BorrowerDashboard from './pages/BorrowerDashboard';
-import AdminDashboard from './pages/AdminDashboard'; 
+import AdminDashboard from './pages/AdminDashboard';
+import TechnicianDashboard from './pages/TechnicianDashboard';
 
 function App() {
-  const currentBasename = window.location.hostname.includes('github.io') ? '/fcams-web' : '/';
-
   return (
-    <Router basename={currentBasename}>
+    <Router>
       <div className="min-h-screen bg-gray-50 text-gray-900 font-sans">
         <Routes>
-          <Route path="/" element={<Navigate to="/login" replace />} />
+          {/* Default route */}
+          <Route
+            path="/"
+            element={<Navigate to="/login" replace />}
+          />
+
+          {/* Authentication */}
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
-          <Route path="/borrower/dashboard" element={<BorrowerDashboard />} />
-          
-          
-          <Route path="/admin/dashboard" element={<AdminDashboard />} />
+
+          {/* Staff Dashboard */}
+          <Route
+            path="/staff/dashboard"
+            element={<BorrowerDashboard />}
+          />
+
+          {/* Administrator Dashboard */}
+          <Route
+            path="/admin/dashboard"
+            element={<AdminDashboard />}
+          />
+
+          {/* Technician Dashboard */}
+          <Route
+            path="/technician/dashboard"
+            element={<TechnicianDashboard />}
+          />
+
+          {/* Unknown routes */}
+          <Route
+            path="*"
+            element={<Navigate to="/login" replace />}
+          />
         </Routes>
       </div>
     </Router>
@@ -26,3 +57,4 @@ function App() {
 }
 
 export default App;
+

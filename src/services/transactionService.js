@@ -1,100 +1,192 @@
-// src/services/transactionService.js
+
 import { supabase } from '../config/supabase';
 
 export const transactionService = {
-  // ALGORITHM 1: Submit Borrowing Request[cite: 80, 81]
-  async submitRequest(userId, assetId, startDate, endDate, purpose) {
-    // Check if the asset is currently available and borrowable
+  // Get verified staff members
+  async getStaffMembers() {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, full_name, role, verification_status')
+      .eq('role', 'Staff')
+      .eq('verification_status', 'Verified')
+      .order('full_name', { ascending: true });
+
+    if (error) throw error;
+    return data || [];
+  },
+
+  // Assign one available asset to a staff member
+  async assignAsset(assetId, staffId, assignedBy, notes = null) {
+    if (!assetId || !staffId || !assignedBy) {
+      throw new Error(
+        'Asset, staff member and administrator are required.'
+      );
+    }
+
+    const { data, error } = await supabase.rpc(
+      'assign_fcams_asset',
+      {
+        p_asset_id: assetId,
+        p_staff_id: staffId,
+        p_notes: notes,
+      }
+    );
+
+    if (error) throw error;
+
+    return data;
+  },
+
+  // Assign multiple available assets to one staff member
+  async assignMultipleAssets(
+    assetIds,
+    staffId,
+    assignedBy,
+    notes = null
+  ) {
+    if (!Array.isArray(assetIds) || assetIds.length === 0) {
+      throw new Error('Select at least one asset.');
+    }
+
+    if (!staffId || !assignedBy) {
+      throw new Error(
+        'Staff member and administrator are required.'
+      );
+    }
+
+    const { data, error } = await supabase.rpc(
+      'assign_multiple_fcams_assets',
+      {
+        p_asset_ids: assetIds,
+        p_staff_id: staffId,
+        p_notes: notes,
+      }
+    );
+
+    if (error) throw error;
+
+    return data;
+  },
+
+  // Get active assignments belonging to one staff member
+  async getStaffAssignments(staffId) {
+    const { data, error } = await supabase
+      .from('assignments')
+      .select(`
+        id,
+        asset_id,
+        staff_id,
+        assigned_by,
+        assigned_at,
+        is_active,
+        notes,
+        assets (
+          id,
+          name,
+          asset_tag,
+          status,
+          location_id,
+          categories (name),
+          locations (name)
+        )
+      `)
+      .eq('staff_id', staffId)
+      .eq('is_active', true)
+      .order('assigned_at', { ascending: false });
+
+    if (error) throw error;
+    return data || [];
+  },
+
+  // Get all asset assignments
+  async getAllAssignments() {
+    const { data, error } = await supabase
+      .from('assignments')
+      .select(`
+        id,
+        asset_id,
+        staff_id,
+        assigned_by,
+        assigned_at,
+        is_active,
+        notes,
+        assets (
+          name,
+          asset_tag
+        ),
+        profiles:profiles!assignments_staff_id_fkey (
+          full_name
+        ),
+        administrator:profiles!assignments_assigned_by_fkey (
+          full_name
+        )
+      `)
+      .order('assigned_at', { ascending: false });
+
+    if (error) throw error;
+    return data || [];
+  },
+
+  // Dispose of an asset and record the disposal
+  async disposeAsset(assetId, disposedBy, reason) {
+    if (!assetId || !disposedBy || !reason?.trim()) {
+      throw new Error(
+        'Asset, administrator and disposal reason are required.'
+      );
+    }
+
     const { data: asset, error: assetError } = await supabase
       .from('assets')
-      .select('status, is_borrowable')
+      .select('id, status')
       .eq('id', assetId)
       .single();
 
     if (assetError) throw assetError;
-    if (asset.status !== 'Available' || !asset.is_borrowable) {
-      throw new Error('This asset is currently not available for borrowing.');
+
+    if (asset.status === 'Disposed') {
+      throw new Error('This asset has already been disposed of.');
     }
 
-    // Insert the pending request
     const { data, error } = await supabase
-      .from('borrowing_requests')
-      .insert([
-        {
-          borrower_id: userId,
-          asset_id: assetId,
-          requested_from: startDate,
-          requested_to: endDate,
-          purpose: purpose,
-          status: 'Pending'
-        }
-      ]);
+      .from('disposal_history')
+      .insert({
+        asset_id: assetId,
+        disposed_by: disposedBy,
+        reason: reason.trim(),
+      })
+      .select()
+      .single();
 
     if (error) throw error;
+
+    const { error: updateError } = await supabase
+      .from('assets')
+      .update({ status: 'Disposed' })
+      .eq('id', assetId);
+
+    if (updateError) {
+      throw new Error(
+        `Disposal was recorded, but asset status could not be updated: ${updateError.message}`
+      );
+    }
+
     return data;
   },
 
-  // ALGORITHM 2: Approve Request and Issue Equipment[cite: 81]
-  // Note: The documentation separates approval from issuance, but we handle the issuance step here to change the asset status.
-  async issueEquipment(requestId, adminId, assetId, expectedReturnDate, condition) {
-    // 1. Update the request status to Approved
-    await supabase
-      .from('borrowing_requests')
-      .update({ status: 'Approved', reviewed_by: adminId, reviewed_at: new Date().toISOString() })
-      .eq('id', requestId);
+  // Get asset disposal history
+  async getDisposalHistory() {
+    const { data, error } = await supabase
+      .from('disposal_history')
+      .select(`
+        *,
+        assets (name, asset_tag),
+        profiles:profiles!disposal_history_disposed_by_fkey (
+          full_name
+        )
+      `)
+      .order('disposed_at', { ascending: false });
 
-    // 2. Create the active transaction record
-    const { data: transaction, error: txError } = await supabase
-      .from('transactions')
-      .insert([
-        {
-          request_id: requestId,
-          asset_id: assetId,
-          issued_by: adminId,
-          expected_return_date: expectedReturnDate,
-          issue_condition: condition,
-          status: 'Active'
-        }
-      ]);
-
-    if (txError) throw txError;
-
-    // 3. Update asset status to 'On Loan'
-    const { error: assetUpdateError } = await supabase
-      .from('assets')
-      .update({ status: 'On Loan' })
-      .eq('id', assetId);
-
-    if (assetUpdateError) throw assetUpdateError;
-
-    return transaction;
+    if (error) throw error;
+    return data || [];
   },
-
-  // ALGORITHM 3: Return Equipment[cite: 81, 82]
-  async returnEquipment(transactionId, assetId, returnCondition, isDamaged) {
-    const returnDate = new Date().toISOString();
-    
-    // 1. Mark transaction as Returned
-    const { error: txError } = await supabase
-      .from('transactions')
-      .update({ 
-        actual_return_date: returnDate, 
-        return_condition: returnCondition,
-        status: 'Returned' 
-      })
-      .eq('id', transactionId);
-
-    if (txError) throw txError;
-
-    // 2. Update asset status based on returned condition
-    const newAssetStatus = isDamaged ? 'Under Maintenance' : 'Available';
-    const { error: assetUpdateError } = await supabase
-      .from('assets')
-      .update({ status: newAssetStatus, condition: returnCondition })
-      .eq('id', assetId);
-
-    if (assetUpdateError) throw assetUpdateError;
-
-    return true;
-  }
 };
